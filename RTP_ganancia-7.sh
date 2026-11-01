@@ -1,6 +1,6 @@
 #!/bin/bash
 # Simulador de RTP com menu interativo + suporte para análise de histórico real
-# Mantém a experiência do menu original e adiciona coleta e análise de dados históricos
+# Mantém a experiência do menu original e adiciona coleta, análise e sequência de ganhos em %
 
 TOTAL_RODADAS=100000
 APOSTA=1
@@ -39,6 +39,84 @@ calcular_rtp() {
     echo "$rtp"
 }
 
+mostrar_sequencia_percentual() {
+    local titulo="$1"
+    shift
+    local -a serie=("$@")
+    local total=${#serie[@]}
+
+    if (( total == 0 )); then
+        echo "=== $titulo ==="
+        echo "Sem dados de sequência disponível."
+        return
+    fi
+
+    local soma=0
+    local cont_positiva=0
+    local cont_negativa=0
+    local maior_positiva=0
+    local maior_negativa=0
+    local atual_positiva=0
+    local atual_negativa=0
+
+    for valor in "${serie[@]}"; do
+        soma=$(awk -v s="$soma" -v v="$valor" 'BEGIN { printf "%.2f", s + v }')
+
+        if (( $(echo "$valor > 0" | bc -l) )); then
+            cont_positiva=$((cont_positiva + 1))
+            atual_positiva=$((atual_positiva + 1))
+            atual_negativa=0
+            if (( atual_positiva > maior_positiva )); then
+                maior_positiva=$atual_positiva
+            fi
+        elif (( $(echo "$valor < 0" | bc -l) )); then
+            cont_negativa=$((cont_negativa + 1))
+            atual_negativa=$((atual_negativa + 1))
+            atual_positiva=0
+            if (( atual_negativa > maior_negativa )); then
+                maior_negativa=$atual_negativa
+            fi
+        else
+            atual_positiva=0
+            atual_negativa=0
+        fi
+    done
+
+    local media=0
+    if (( total > 0 )); then
+        media=$(awk -v s="$soma" -v n="$total" 'BEGIN { printf "%.2f", (n > 0 ? s / n : 0) }')
+    fi
+
+    echo
+    echo "=== $titulo ==="
+    echo "Qtd. de observações: $total"
+    echo "Média da sequência: ${media}%"
+    echo "Maior sequência de ganhos: ${maior_positiva} rodadas"
+    echo "Maior sequência de perdas: ${maior_negativa} rodadas"
+
+    local limite=20
+    if (( total < 20 )); then
+        limite=$total
+    fi
+
+    printf "Primeiros %s valores: " "$limite"
+    for ((i=0; i<limite; i++)); do
+        printf "%.1f " "${serie[$i]}"
+    done
+    echo
+
+    if (( total > 20 )); then
+        printf "Últimos %s valores: " "$limite"
+        for ((i = total - limite; i < total; i++)); do
+            printf "%.1f " "${serie[$i]}"
+        done
+        echo
+    fi
+
+    echo "Total de valores positivos: $cont_positiva"
+    echo "Total de valores negativos: $cont_negativa"
+}
+
 simular_jogo() {
     local JOGO="$1"
     shift
@@ -46,6 +124,7 @@ simular_jogo() {
     local TOTAL_RODADAS_LOCAL="$TOTAL_RODADAS"
     local GANHO_TOTAL=0
     local RESULTADO TEMP GANHO
+    local -a serie_percentual=()
     declare -A contagem=()
 
     echo "Simulando $JOGO..."
@@ -69,6 +148,8 @@ simular_jogo() {
         done
 
         GANHO_TOTAL=$((GANHO_TOTAL + GANHO))
+        percentual_rodada=$(awk -v ganho="$GANHO" -v aposta="$APOSTA" 'BEGIN { printf "%.2f", ((ganho / aposta) * 100) }')
+        serie_percentual+=("$percentual_rodada")
 
         if (( i % BLOCO == 0 )); then
             RTP_BLOCO=$(awk "BEGIN {print ($GANHO_TOTAL / ($i * $APOSTA)) * 100}")
@@ -99,6 +180,7 @@ simular_jogo() {
     echo "Retorno total: $GANHO_TOTAL créditos"
     echo -e "RTP estimado final: $RTP % -> $CHANCE"
     echo "RTP teórico oficial aproximado: ~96 %"
+    mostrar_sequencia_percentual "Sequência de ganhos em porcentagem por rodada" "${serie_percentual[@]}"
     echo
 }
 
@@ -153,6 +235,7 @@ if not rows:
     sys.exit(1)
 
 summary = defaultdict(lambda: {'rodadas': 0, 'aposta': 0.0, 'ganho': 0.0})
+serie_percentual = []
 total_rodadas = 0
 total_aposta = 0.0
 total_ganho = 0.0
@@ -178,6 +261,9 @@ for row in rows:
     total_aposta += aposta
     total_ganho += ganho
 
+    percentual = ((ganho / aposta) * 100) if aposta else 0.0
+    serie_percentual.append(percentual)
+
     s = summary[nome]
     s['rodadas'] += 1
     s['aposta'] += aposta
@@ -199,6 +285,35 @@ if summary:
         print(f"{nome}: {dados['rodadas']} rodadas | apostado={dados['aposta']:.2f} | pago={dados['ganho']:.2f} | RTP={jogo_rtp:.2f}%")
 else:
     print('Nenhum dado válido foi identificado.')
+
+if serie_percentual:
+    media = sum(serie_percentual) / len(serie_percentual)
+    maior_positiva = 0
+    atual_positiva = 0
+    maior_negativa = 0
+    atual_negativa = 0
+    for valor in serie_percentual:
+        if valor > 0:
+            atual_positiva += 1
+            atual_negativa = 0
+            maior_positiva = max(maior_positiva, atual_positiva)
+        elif valor < 0:
+            atual_negativa += 1
+            atual_positiva = 0
+            maior_negativa = max(maior_negativa, atual_negativa)
+        else:
+            atual_positiva = 0
+            atual_negativa = 0
+
+    print('\n=== Sequência de ganhos em porcentagem ===')
+    print(f'Média da sequência: {media:.2f}%')
+    print(f'Maior sequência de ganhos: {maior_positiva} rodadas')
+    print(f'Maior sequência de perdas: {maior_negativa} rodadas')
+    amostra = serie_percentual[:20]
+    print(f'Primeiros 20 valores: {amostra}')
+    if len(serie_percentual) > 20:
+        ultimos = serie_percentual[-20:]
+        print(f'Últimos 20 valores: {ultimos}')
 PY
     else
         echo "Formato de arquivo não suportado: $arquivo"
